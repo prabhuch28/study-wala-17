@@ -2,6 +2,8 @@ import type React from "react"
 import type { Metadata } from "next"
 import { Inter, JetBrains_Mono } from "next/font/google"
 import "./globals.css"
+import { AuthProvider } from "@/components/providers/auth-provider"
+import ClientOnly from "@/components/client-only"
 
 const inter = Inter({
   subsets: ["latin"],
@@ -16,7 +18,7 @@ const jetbrainsMono = JetBrains_Mono({
 })
 
 export const metadata: Metadata = {
-  title: "Lumos Learn - AI Study Guide Generator",
+  title: "Study-Wala - AI Study Guide Generator",
   description: "Generate personalized study guides with AI-powered content creation",
   generator: "v0.app",
 }
@@ -27,8 +29,12 @@ export default function RootLayout({
   children: React.ReactNode
 }>) {
   return (
-    <html lang="en" className="dark">
-      <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`}>{children}</body>
+    <html lang="en" className="dark" suppressHydrationWarning>
+      <body className={`${inter.variable} ${jetbrainsMono.variable} font-sans antialiased`} suppressHydrationWarning>
+        <ClientOnly>
+          <AuthProvider>{children}</AuthProvider>
+        </ClientOnly>
+      </body>
     </html>
   )
 }

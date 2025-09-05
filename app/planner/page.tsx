@@ -1,28 +1,57 @@
 "use client"
 
-import { useState } from "react"
-import { Button } from "@/components/ui/button"
+import { useState, useEffect } from "react"
+import { useSession } from "next-auth/react"
+import Link from "next/link"
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card"
+import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs"
+import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
 import { Input } from "@/components/ui/input"
+import { Label } from "@/components/ui/label"
 import { Textarea } from "@/components/ui/textarea"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from "@/components/ui/dialog"
-import { Label } from "@/components/ui/label"
-import {
-  ArrowLeft,
-  Calendar,
-  Clock,
-  Target,
-  Plus,
-  BookOpen,
-  Brain,
-  CheckCircle2,
-  Circle,
-  TrendingUp,
-  Zap,
-} from "lucide-react"
-import Link from "next/link"
+import { Calendar, Clock, Target, TrendingUp, Plus, Play, CheckCircle, AlertCircle, BookOpen, Brain, Circle, ArrowLeft, MessageSquare, Timer, Trophy, Sparkles, RefreshCw } from "lucide-react"
+import ChatInterface from "@/components/ai-tutor/chat-interface"
+import PomodoroTimer from "@/components/study-timer/pomodoro-timer"
+import ProgressTracker from "@/components/gamification/progress-tracker"
+import SmartSuggestions from "@/components/ai-recommendations/smart-suggestions"
+import ClientOnly from "@/components/client-only"
+
+interface StudyPlan {
+  _id: string
+  title: string
+  description: string
+  startDate: string
+  endDate: string
+  subjects: Array<{
+    name: string
+    color: string
+    priority: string
+    allocatedHours: number
+    completedHours: number
+  }>
+  sessions: Array<{
+    _id: string
+    title: string
+    subject: string
+    startTime: string
+    endTime: string
+    duration: number
+    status: string
+    priority: string
+    type: string
+  }>
+  statistics: {
+    totalPlannedHours: number
+    totalCompletedHours: number
+    totalSessions: number
+    completedSessions: number
+    streakDays: number
+    longestStreak: number
+  }
+}
 
 interface StudySession {
   id: string
@@ -45,490 +74,701 @@ interface Goal {
   category: "exam" | "skill" | "project" | "general"
 }
 
-export default function StudyPlannerPage() {
-  const [selectedDate, setSelectedDate] = useState(new Date().toISOString().split("T")[0])
-  const [isAddingSession, setIsAddingSession] = useState(false)
-  const [isAddingGoal, setIsAddingGoal] = useState(false)
+interface PlanSuggestions {
+  title: string
+  description: string
+  subjects: Array<{
+    name: string
+    color?: string
+    priority?: 'low' | 'medium' | 'high'
+  }>
+  topics: Array<{
+    subject: string
+    items: string[]
+  }>
+  roadmap: Array<{
+    week: number
+    focus: string
+    goals: string[]
+  }>
+}
 
-  // Mock data - in a real app, this would come from a database
-  const [studySessions, setStudySessions] = useState<StudySession[]>([
-    {
-      id: "1",
-      title: "Physics Review",
-      subject: "Advanced Physics",
-      duration: 90,
-      date: "2024-01-15",
-      time: "14:00",
-      type: "review",
-      completed: false,
-      studyGuideId: "physics-guide-1",
-    },
-    {
-      id: "2",
-      title: "Math Practice",
-      subject: "Calculus",
-      duration: 60,
-      date: "2024-01-15",
-      time: "16:00",
-      type: "practice",
-      completed: true,
-    },
-    {
-      id: "3",
-      title: "Chemistry Flashcards",
-      subject: "Organic Chemistry",
-      duration: 45,
-      date: "2024-01-16",
-      time: "10:00",
-      type: "flashcards",
-      completed: false,
-    },
-  ])
+export default function PlannerPage() {
+  const { data: session } = useSession()
+  const [studyPlans, setStudyPlans] = useState<StudyPlan[]>([])
+  const [activeStudyPlan, setActiveStudyPlan] = useState<StudyPlan | null>(null)
+  const [loading, setLoading] = useState(true)
+  const [showCreateDialog, setShowCreateDialog] = useState(false)
+  const [activeTab, setActiveTab] = useState("overview")
+  const [showAITutor, setShowAITutor] = useState(false)
+  const [showPomodoroTimer, setShowPomodoroTimer] = useState(false)
 
-  const [goals, setGoals] = useState<Goal[]>([
-    {
-      id: "1",
-      title: "Master Quantum Mechanics",
-      description: "Complete comprehensive understanding of quantum mechanics principles",
-      targetDate: "2024-02-15",
-      progress: 65,
-      category: "skill",
-    },
-    {
-      id: "2",
-      title: "Physics Midterm Exam",
-      description: "Achieve 90% or higher on the physics midterm examination",
-      targetDate: "2024-01-30",
-      progress: 40,
-      category: "exam",
-    },
-    {
-      id: "3",
-      title: "Research Project",
-      description: "Complete thermodynamics research project",
-      targetDate: "2024-03-01",
-      progress: 25,
-      category: "project",
-    },
-  ])
+  // Form states
+  const [planTitle, setPlanTitle] = useState("")
+  const [planDescription, setPlanDescription] = useState("")
+  const [startDate, setStartDate] = useState("")
+  const [endDate, setEndDate] = useState("")
+  const [subjects, setSubjects] = useState([{ name: "", color: "#3B82F6", priority: "medium" }])
 
-  const todaysSessions = studySessions.filter((session) => session.date === selectedDate)
-  const completedToday = todaysSessions.filter((session) => session.completed).length
-  const totalToday = todaysSessions.length
+  // AI suggestions state
+  const [aiSuggestions, setAiSuggestions] = useState<PlanSuggestions | null>(null)
+  const [aiLoading, setAiLoading] = useState(false)
+  const [aiError, setAiError] = useState<string | null>(null)
 
-  const getTypeIcon = (type: StudySession["type"]) => {
-    switch (type) {
-      case "review":
-        return <BookOpen className="w-4 h-4" />
-      case "practice":
-        return <Target className="w-4 h-4" />
-      case "reading":
-        return <BookOpen className="w-4 h-4" />
-      case "flashcards":
-        return <Brain className="w-4 h-4" />
-      default:
-        return <Circle className="w-4 h-4" />
+  // Fetch AI plan suggestions for the dialog
+  const fetchAISuggestions = async () => {
+    try {
+      setAiLoading(true)
+      setAiError(null)
+      const response = await fetch('/api/ai/plan-suggestions', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          userEmail: session?.user?.email,
+          startDate,
+          endDate,
+          subjects: subjects.map(s => ({ name: s.name, color: s.color, priority: s.priority as 'low' | 'medium' | 'high' }))
+        })
+      })
+      if (!response.ok) throw new Error(`HTTP ${response.status}`)
+      const data = await response.json()
+      setAiSuggestions(data.suggestions as PlanSuggestions)
+    } catch (err) {
+      console.error('Failed to fetch AI suggestions:', err)
+      setAiError('Failed to fetch suggestions. Please try again.')
+    } finally {
+      setAiLoading(false)
     }
   }
 
-  const getTypeColor = (type: StudySession["type"]) => {
-    switch (type) {
-      case "review":
-        return "bg-cyan-500/20 text-cyan-400 border-cyan-500/30"
-      case "practice":
-        return "bg-purple-500/20 text-purple-400 border-purple-500/30"
-      case "reading":
-        return "bg-emerald-500/20 text-emerald-400 border-emerald-500/30"
-      case "flashcards":
-        return "bg-orange-500/20 text-orange-400 border-orange-500/30"
-      default:
-        return "bg-slate-500/20 text-slate-400 border-slate-500/30"
+  const applyAISuggestions = () => {
+    if (!aiSuggestions) return
+    setPlanTitle(aiSuggestions.title)
+    setPlanDescription(aiSuggestions.description)
+    if (aiSuggestions.subjects?.length) {
+      setSubjects(
+        aiSuggestions.subjects.map(s => ({
+          name: s.name,
+          color: s.color || '#3B82F6',
+          priority: (s.priority as string) || 'medium'
+        }))
+      )
     }
   }
 
-  const getCategoryColor = (category: Goal["category"]) => {
-    switch (category) {
-      case "exam":
-        return "bg-red-500/20 text-red-400 border-red-500/30"
-      case "skill":
-        return "bg-blue-500/20 text-blue-400 border-blue-500/30"
-      case "project":
-        return "bg-green-500/20 text-green-400 border-green-500/30"
-      case "general":
-        return "bg-yellow-500/20 text-yellow-400 border-yellow-500/30"
-      default:
-        return "bg-slate-500/20 text-slate-400 border-slate-500/30"
+  // Load AI suggestions when dialog opens
+  useEffect(() => {
+    if (showCreateDialog) {
+      fetchAISuggestions()
+    } else {
+      // reset error/loading when dialog closes
+      setAiError(null)
+      setAiLoading(false)
+    }
+  }, [showCreateDialog])
+
+  useEffect(() => {
+    if (session?.user) {
+      fetchStudyPlans()
+    }
+  }, [session])
+
+  const fetchStudyPlans = async () => {
+    try {
+      const response = await fetch(`http://localhost:3004/api/study-planner?userId=${session?.user?.email}`)
+      const data = await response.json()
+      
+      if (data.success) {
+        setStudyPlans(data.data)
+        if (data.data.length > 0) {
+          setActiveStudyPlan(data.data[0])
+        }
+      }
+    } catch (error) {
+      console.error('Failed to fetch study plans:', error)
+    } finally {
+      setLoading(false)
     }
   }
 
-  const toggleSessionComplete = (sessionId: string) => {
-    setStudySessions((prev) =>
-      prev.map((session) => (session.id === sessionId ? { ...session, completed: !session.completed } : session)),
+  const createStudyPlan = async () => {
+    try {
+      const planData = {
+        userId: session?.user?.email,
+        title: planTitle,
+        description: planDescription,
+        startDate: new Date(startDate),
+        endDate: new Date(endDate),
+        subjects: subjects.filter(s => s.name.trim() !== "").map(s => ({
+          ...s,
+          allocatedHours: 0,
+          completedHours: 0
+        }))
+      }
+
+      const response = await fetch('http://localhost:3004/api/study-planner', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(planData)
+      })
+
+      const data = await response.json()
+      if (data.success) {
+        await fetchStudyPlans()
+        setShowCreateDialog(false)
+        // Reset form
+        setPlanTitle("")
+        setPlanDescription("")
+        setStartDate("")
+        setEndDate("")
+        setSubjects([{ name: "", color: "#3B82F6", priority: "medium" }])
+      }
+    } catch (error) {
+      console.error('Failed to create study plan:', error)
+    }
+  }
+
+  const getTodaysSessions = () => {
+    if (!activeStudyPlan) return []
+    
+    const today = new Date()
+    today.setHours(0, 0, 0, 0)
+    const tomorrow = new Date(today)
+    tomorrow.setDate(tomorrow.getDate() + 1)
+    
+    return activeStudyPlan.sessions.filter(session => {
+      const sessionDate = new Date(session.startTime)
+      return sessionDate >= today && sessionDate < tomorrow
+    })
+  }
+
+  const getUpcomingSessions = () => {
+    if (!activeStudyPlan) return []
+    
+    const now = new Date()
+    return activeStudyPlan.sessions
+      .filter(session => new Date(session.startTime) > now && session.status === 'scheduled')
+      .sort((a, b) => new Date(a.startTime).getTime() - new Date(b.startTime).getTime())
+      .slice(0, 5)
+  }
+
+  const getStatusColor = (status: string) => {
+    switch (status) {
+      case 'completed': return 'bg-green-500'
+      case 'in-progress': return 'bg-blue-500'
+      case 'scheduled': return 'bg-gray-400'
+      case 'missed': return 'bg-red-500'
+      default: return 'bg-gray-400'
+    }
+  }
+
+  const getPriorityColor = (priority: string) => {
+    switch (priority) {
+      case 'urgent': return 'destructive'
+      case 'high': return 'destructive'
+      case 'medium': return 'default'
+      case 'low': return 'secondary'
+      default: return 'default'
+    }
+  }
+
+  if (loading) {
+    return (
+      <div className="container mx-auto p-6">
+        <div className="flex items-center justify-center h-64">
+          <div className="animate-spin rounded-full h-8 w-8 border-b-2 border-primary"></div>
+        </div>
+      </div>
     )
   }
 
+  const todaysSessions = getTodaysSessions()
+  const upcomingSessions = getUpcomingSessions()
+  const completedToday = todaysSessions.filter(s => s.status === 'completed').length
+
   return (
-    <div className="min-h-screen bg-gradient-to-br from-slate-950 via-blue-950 to-slate-900 p-6">
-      <div className="max-w-7xl mx-auto">
-        {/* Header */}
-        <div className="flex items-center justify-between mb-8">
-          <div className="flex items-center gap-4">
-            <Link href="/dashboard">
-              <Button variant="ghost" className="text-cyan-400 hover:bg-cyan-500/10">
-                <ArrowLeft className="w-4 h-4 mr-2" />
-                Back to Dashboard
-              </Button>
-            </Link>
-            <div>
-              <h1 className="text-3xl font-bold text-white">Study Planner</h1>
-              <p className="text-slate-400">Organize your learning journey</p>
-            </div>
-          </div>
-
-          <div className="flex gap-3">
-            <Dialog open={isAddingSession} onOpenChange={setIsAddingSession}>
-              <DialogTrigger asChild>
-                <Button className="bg-cyan-600 hover:bg-cyan-700 text-white">
-                  <Plus className="w-4 h-4 mr-2" />
-                  Add Session
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="bg-slate-800 border-slate-700">
-                <DialogHeader>
-                  <DialogTitle className="text-white">Schedule Study Session</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div>
-                    <Label htmlFor="session-title" className="text-slate-300">
-                      Session Title
-                    </Label>
-                    <Input
-                      id="session-title"
-                      placeholder="e.g., Physics Review"
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="session-subject" className="text-slate-300">
-                      Subject
-                    </Label>
-                    <Input
-                      id="session-subject"
-                      placeholder="e.g., Advanced Physics"
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="session-date" className="text-slate-300">
-                        Date
-                      </Label>
-                      <Input id="session-date" type="date" className="bg-slate-700 border-slate-600 text-white" />
-                    </div>
-                    <div>
-                      <Label htmlFor="session-time" className="text-slate-300">
-                        Time
-                      </Label>
-                      <Input id="session-time" type="time" className="bg-slate-700 border-slate-600 text-white" />
-                    </div>
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="session-duration" className="text-slate-300">
-                        Duration (minutes)
-                      </Label>
-                      <Input
-                        id="session-duration"
-                        type="number"
-                        placeholder="60"
-                        className="bg-slate-700 border-slate-600 text-white"
-                      />
-                    </div>
-                    <div>
-                      <Label htmlFor="session-type" className="text-slate-300">
-                        Type
-                      </Label>
-                      <Select>
-                        <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                          <SelectValue placeholder="Select type" />
-                        </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600">
-                          <SelectItem value="review">Review</SelectItem>
-                          <SelectItem value="practice">Practice</SelectItem>
-                          <SelectItem value="reading">Reading</SelectItem>
-                          <SelectItem value="flashcards">Flashcards</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-3">
-                    <Button variant="outline" onClick={() => setIsAddingSession(false)}>
-                      Cancel
-                    </Button>
-                    <Button className="bg-cyan-600 hover:bg-cyan-700">Schedule Session</Button>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-
-            <Dialog open={isAddingGoal} onOpenChange={setIsAddingGoal}>
-              <DialogTrigger asChild>
-                <Button
-                  variant="outline"
-                  className="border-cyan-500/30 text-cyan-400 hover:bg-cyan-500/10 bg-transparent"
-                >
-                  <Target className="w-4 h-4 mr-2" />
-                  Add Goal
-                </Button>
-              </DialogTrigger>
-              <DialogContent className="bg-slate-800 border-slate-700">
-                <DialogHeader>
-                  <DialogTitle className="text-white">Set Learning Goal</DialogTitle>
-                </DialogHeader>
-                <div className="space-y-4">
-                  <div>
-                    <Label htmlFor="goal-title" className="text-slate-300">
-                      Goal Title
-                    </Label>
-                    <Input
-                      id="goal-title"
-                      placeholder="e.g., Master Quantum Mechanics"
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  </div>
-                  <div>
-                    <Label htmlFor="goal-description" className="text-slate-300">
-                      Description
-                    </Label>
-                    <Textarea
-                      id="goal-description"
-                      placeholder="Describe your learning goal..."
-                      className="bg-slate-700 border-slate-600 text-white"
-                    />
-                  </div>
-                  <div className="grid grid-cols-2 gap-4">
-                    <div>
-                      <Label htmlFor="goal-date" className="text-slate-300">
-                        Target Date
-                      </Label>
-                      <Input id="goal-date" type="date" className="bg-slate-700 border-slate-600 text-white" />
-                    </div>
-                    <div>
-                      <Label htmlFor="goal-category" className="text-slate-300">
-                        Category
-                      </Label>
-                      <Select>
-                        <SelectTrigger className="bg-slate-700 border-slate-600 text-white">
-                          <SelectValue placeholder="Select category" />
-                        </SelectTrigger>
-                        <SelectContent className="bg-slate-700 border-slate-600">
-                          <SelectItem value="exam">Exam</SelectItem>
-                          <SelectItem value="skill">Skill</SelectItem>
-                          <SelectItem value="project">Project</SelectItem>
-                          <SelectItem value="general">General</SelectItem>
-                        </SelectContent>
-                      </Select>
-                    </div>
-                  </div>
-                  <div className="flex justify-end gap-3">
-                    <Button variant="outline" onClick={() => setIsAddingGoal(false)}>
-                      Cancel
-                    </Button>
-                    <Button className="bg-cyan-600 hover:bg-cyan-700">Create Goal</Button>
-                  </div>
-                </div>
-              </DialogContent>
-            </Dialog>
-          </div>
+    <div className="container mx-auto p-6 space-y-6">
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-3xl font-bold">Study Planner</h1>
+          {activeStudyPlan && (
+            <p className="text-muted-foreground mt-1">{activeStudyPlan.title}</p>
+          )}
         </div>
-
-        <div className="grid grid-cols-1 lg:grid-cols-3 gap-8">
-          {/* Left Column - Today's Schedule */}
-          <div className="lg:col-span-2 space-y-6">
-            {/* Date Selector */}
-            <Card className="bg-slate-800/50 backdrop-blur-sm border-slate-700/50">
-              <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
-                  <Calendar className="w-5 h-5 text-cyan-400" />
-                  Schedule
-                </CardTitle>
-              </CardHeader>
-              <CardContent>
-                <div className="flex items-center gap-4 mb-6">
-                  <Input
-                    type="date"
-                    value={selectedDate}
-                    onChange={(e) => setSelectedDate(e.target.value)}
-                    className="bg-slate-700 border-slate-600 text-white w-auto"
-                  />
-                  <div className="text-sm text-slate-400">
-                    {completedToday}/{totalToday} sessions completed
-                  </div>
-                </div>
-
-                {/* Today's Sessions */}
-                <div className="space-y-3">
-                  {todaysSessions.length === 0 ? (
-                    <div className="text-center py-8 text-slate-400">
-                      <Calendar className="w-12 h-12 mx-auto mb-3 opacity-50" />
-                      <p>No study sessions scheduled for this date</p>
-                      <p className="text-sm">Click "Add Session" to schedule your first session</p>
+        <div className="flex gap-2">
+          <Button onClick={() => setShowAITutor(true)} variant="outline">
+            <MessageSquare className="h-4 w-4 mr-2" />
+            AI Tutor
+          </Button>
+          <Button onClick={() => setShowPomodoroTimer(true)} variant="outline">
+            <Timer className="h-4 w-4 mr-2" />
+            Focus Timer
+          </Button>
+          <Dialog open={showCreateDialog} onOpenChange={setShowCreateDialog}>
+            <DialogTrigger asChild>
+              <Button>
+                <Plus className="h-4 w-4 mr-2" />
+                Create Plan
+              </Button>
+            </DialogTrigger>
+            <DialogContent className="max-w-2xl">
+              <DialogHeader>
+                <DialogTitle>Create New Study Plan</DialogTitle>
+              </DialogHeader>
+              <div className="space-y-4">
+                {/* AI Suggestions Panel */}
+                <div className="rounded-lg border p-4 bg-muted/30">
+                  <div className="flex items-center justify-between mb-2">
+                    <div className="flex items-center gap-2">
+                      <Sparkles className="h-4 w-4 text-purple-500" />
+                      <span className="font-medium">AI Suggestions</span>
                     </div>
-                  ) : (
-                    todaysSessions.map((session) => (
-                      <Card
-                        key={session.id}
-                        className={`bg-slate-700/50 border-slate-600/50 transition-all duration-200 ${
-                          session.completed ? "opacity-75" : "hover:bg-slate-700/70"
-                        }`}
-                      >
-                        <CardContent className="p-4">
-                          <div className="flex items-center justify-between">
-                            <div className="flex items-center gap-3">
-                              <Button
-                                variant="ghost"
-                                size="sm"
-                                onClick={() => toggleSessionComplete(session.id)}
-                                className="p-1 h-auto"
-                              >
-                                {session.completed ? (
-                                  <CheckCircle2 className="w-5 h-5 text-emerald-400" />
-                                ) : (
-                                  <Circle className="w-5 h-5 text-slate-400" />
-                                )}
-                              </Button>
-                              <div>
-                                <h3
-                                  className={`font-medium ${
-                                    session.completed ? "text-slate-400 line-through" : "text-white"
-                                  }`}
-                                >
-                                  {session.title}
-                                </h3>
-                                <p className="text-sm text-slate-400">{session.subject}</p>
-                              </div>
-                            </div>
-                            <div className="flex items-center gap-3">
-                              <Badge variant="secondary" className={getTypeColor(session.type)}>
-                                {getTypeIcon(session.type)}
-                                <span className="ml-1 capitalize">{session.type}</span>
-                              </Badge>
-                              <div className="text-sm text-slate-400 flex items-center gap-1">
-                                <Clock className="w-3 h-3" />
-                                {session.time} ({session.duration}m)
-                              </div>
-                            </div>
-                          </div>
-                        </CardContent>
-                      </Card>
-                    ))
+                    <div className="flex items-center gap-2">
+                      <Button variant="outline" size="sm" onClick={fetchAISuggestions} disabled={aiLoading}>
+                        <RefreshCw className="h-3 w-3 mr-1" /> Refresh
+                      </Button>
+                      <Button size="sm" onClick={applyAISuggestions} disabled={!aiSuggestions}>
+                        Apply to Form
+                      </Button>
+                    </div>
+                  </div>
+                  {aiLoading && (
+                    <div className="flex items-center gap-2 text-sm text-muted-foreground">
+                      <div className="animate-spin rounded-full h-4 w-4 border-2 border-b-0 border-primary"></div>
+                      Generating personalized roadmap...
+                    </div>
+                  )}
+                  {!aiLoading && aiError && (
+                    <div className="text-sm text-destructive">{aiError}</div>
+                  )}
+                  {!aiLoading && !aiError && aiSuggestions && (
+                    <div className="space-y-3 text-sm">
+                      <div>
+                        <div className="font-medium">Suggested Title</div>
+                        <div className="text-muted-foreground">{aiSuggestions.title}</div>
+                      </div>
+                      <div>
+                        <div className="font-medium">Description</div>
+                        <div className="text-muted-foreground">{aiSuggestions.description}</div>
+                      </div>
+                      <div>
+                        <div className="font-medium mb-1">Subjects & Priority</div>
+                        <div className="flex flex-wrap gap-2">
+                          {aiSuggestions.subjects.map((s, idx) => (
+                            <Badge key={`${s.name}-${idx}`} variant="outline" className="text-xs">
+                              <span className="inline-flex items-center gap-2">
+                                <span className="w-2 h-2 rounded-full" style={{ backgroundColor: s.color || '#3B82F6' }}></span>
+                                {s.name} · {s.priority || 'medium'}
+                              </span>
+                            </Badge>
+                          ))}
+                        </div>
+                      </div>
+                      <div>
+                        <div className="font-medium mb-1">Roadmap (First 2 Weeks)</div>
+                        <ul className="list-disc pl-5 text-muted-foreground space-y-1">
+                          {aiSuggestions.roadmap.slice(0, 2).map((w) => (
+                            <li key={w.week}>Week {w.week}: Focus on {w.focus} — {w.goals[0]}</li>
+                          ))}
+                        </ul>
+                      </div>
+                      <div>
+                        <div className="font-medium mb-1">Topics</div>
+                        <div className="text-muted-foreground">
+                          {aiSuggestions.topics.slice(0, 1).map(t => t.items.slice(0, 5).join(', '))}
+                        </div>
+                      </div>
+                    </div>
                   )}
                 </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="title">Plan Title</Label>
+                    <Input
+                      id="title"
+                      value={planTitle}
+                      onChange={(e) => setPlanTitle(e.target.value)}
+                      placeholder="e.g., Final Exam Preparation"
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="description">Description</Label>
+                    <Input
+                      id="description"
+                      value={planDescription}
+                      onChange={(e) => setPlanDescription(e.target.value)}
+                      placeholder="Brief description"
+                    />
+                  </div>
+                </div>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <Label htmlFor="startDate">Start Date</Label>
+                    <Input
+                      id="startDate"
+                      type="date"
+                      value={startDate}
+                      onChange={(e) => setStartDate(e.target.value)}
+                    />
+                  </div>
+                  <div>
+                    <Label htmlFor="endDate">End Date</Label>
+                    <Input
+                      id="endDate"
+                      type="date"
+                      value={endDate}
+                      onChange={(e) => setEndDate(e.target.value)}
+                    />
+                  </div>
+                </div>
+                <div>
+                  <Label>Subjects</Label>
+                  {subjects.map((subject, index) => (
+                    <div key={index} className="flex gap-2 mt-2">
+                      <Input
+                        placeholder="Subject name"
+                        value={subject.name}
+                        onChange={(e) => {
+                          const newSubjects = [...subjects]
+                          newSubjects[index].name = e.target.value
+                          setSubjects(newSubjects)
+                        }}
+                      />
+                      <Input
+                        type="color"
+                        value={subject.color}
+                        onChange={(e) => {
+                          const newSubjects = [...subjects]
+                          newSubjects[index].color = e.target.value
+                          setSubjects(newSubjects)
+                        }}
+                        className="w-16"
+                      />
+                      <Select
+                        value={subject.priority}
+                        onValueChange={(value) => {
+                          const newSubjects = [...subjects]
+                          newSubjects[index].priority = value
+                          setSubjects(newSubjects)
+                        }}
+                      >
+                        <SelectTrigger className="w-32">
+                          <SelectValue />
+                        </SelectTrigger>
+                        <SelectContent>
+                          <SelectItem value="low">Low</SelectItem>
+                          <SelectItem value="medium">Medium</SelectItem>
+                          <SelectItem value="high">High</SelectItem>
+                        </SelectContent>
+                      </Select>
+                    </div>
+                  ))}
+                  <Button
+                    type="button"
+                    variant="outline"
+                    size="sm"
+                    className="mt-2"
+                    onClick={() => setSubjects([...subjects, { name: "", color: "#3B82F6", priority: "medium" }])}
+                  >
+                    Add Subject
+                  </Button>
+                </div>
+                <div className="flex justify-end gap-2">
+                  <Button variant="outline" onClick={() => setShowCreateDialog(false)}>
+                    Cancel
+                  </Button>
+                  <Button onClick={createStudyPlan}>Create Plan</Button>
+                </div>
+              </div>
+            </DialogContent>
+          </Dialog>
+        </div>
+      </div>
+
+      {!activeStudyPlan ? (
+        <Card className="p-12 text-center">
+          <CardContent>
+            <Target className="h-16 w-16 mx-auto text-muted-foreground mb-4" />
+            <h3 className="text-xl font-semibold mb-2">No Study Plans Yet</h3>
+            <p className="text-muted-foreground mb-4">
+              Create your first study plan to start organizing your learning journey.
+            </p>
+            <Button onClick={() => setShowCreateDialog(true)}>
+              <Plus className="h-4 w-4 mr-2" />
+              Create Your First Plan
+            </Button>
+          </CardContent>
+        </Card>
+      ) : (
+        <Tabs value={activeTab} onValueChange={setActiveTab} className="space-y-6">
+          <TabsList className="grid w-full grid-cols-5">
+            <TabsTrigger value="overview">Overview</TabsTrigger>
+            <TabsTrigger value="ai-tutor">AI Tutor</TabsTrigger>
+            <TabsTrigger value="timer">Focus Timer</TabsTrigger>
+            <TabsTrigger value="progress">Progress</TabsTrigger>
+            <TabsTrigger value="recommendations">AI Insights</TabsTrigger>
+          </TabsList>
+
+          <TabsContent value="overview" className="space-y-6">
+            {/* Stats Overview */}
+            <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Today's Sessions</CardTitle>
+                <Calendar className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{todaysSessions.length}</div>
+                <p className="text-xs text-muted-foreground">
+                  {completedToday} completed
+                </p>
               </CardContent>
             </Card>
 
-            {/* Weekly Overview */}
-            <Card className="bg-slate-800/50 backdrop-blur-sm border-slate-700/50">
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Study Hours</CardTitle>
+                <Clock className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {activeStudyPlan.statistics.totalCompletedHours.toFixed(1)}h
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  of {activeStudyPlan.statistics.totalPlannedHours.toFixed(1)}h planned
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Completion Rate</CardTitle>
+                <Target className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">
+                  {Math.round((activeStudyPlan.statistics.completedSessions / activeStudyPlan.statistics.totalSessions) * 100) || 0}%
+                </div>
+                <p className="text-xs text-muted-foreground">
+                  {activeStudyPlan.statistics.completedSessions} of {activeStudyPlan.statistics.totalSessions} sessions
+                </p>
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader className="flex flex-row items-center justify-between space-y-0 pb-2">
+                <CardTitle className="text-sm font-medium">Current Streak</CardTitle>
+                <TrendingUp className="h-4 w-4 text-muted-foreground" />
+              </CardHeader>
+              <CardContent>
+                <div className="text-2xl font-bold">{activeStudyPlan.statistics.streakDays}</div>
+                <p className="text-xs text-muted-foreground">
+                  Best: {activeStudyPlan.statistics.longestStreak} days
+                </p>
+              </CardContent>
+            </Card>
+          </div>
+
+          {/* Main Content */}
+          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
+            <Card>
               <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
-                  <TrendingUp className="w-5 h-5 text-cyan-400" />
-                  Weekly Progress
+                <CardTitle className="flex items-center gap-2">
+                  <Clock className="h-5 w-5" />
+                  Today's Sessions
                 </CardTitle>
               </CardHeader>
               <CardContent>
-                <div className="grid grid-cols-7 gap-2">
-                  {["Mon", "Tue", "Wed", "Thu", "Fri", "Sat", "Sun"].map((day, index) => {
-                    const dayProgress = Math.floor(Math.random() * 100) // Mock data
-                    return (
-                      <div key={day} className="text-center">
-                        <div className="text-xs text-slate-400 mb-2">{day}</div>
-                        <div className="h-20 bg-slate-700 rounded-lg relative overflow-hidden">
-                          <div
-                            className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-cyan-500 to-cyan-400 transition-all duration-300"
-                            style={{ height: `${dayProgress}%` }}
-                          />
+                {todaysSessions.length === 0 ? (
+                  <p className="text-muted-foreground text-center py-4">
+                    No sessions scheduled for today
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {todaysSessions.map((session) => (
+                      <div key={session._id} className="flex items-center space-x-3 p-3 rounded-lg border">
+                        <div className={`w-3 h-3 rounded-full ${getStatusColor(session.status)}`}></div>
+                        <div className="flex-1">
+                          <div className="flex items-center justify-between">
+                            <p className="font-medium">{session.title}</p>
+                            <Badge variant={getPriorityColor(session.priority)}>
+                              {session.priority}
+                            </Badge>
+                          </div>
+                          <p className="text-sm text-muted-foreground">
+                            {session.subject} • {new Date(session.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })} - {new Date(session.endTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
                         </div>
-                        <div className="text-xs text-slate-400 mt-1">{dayProgress}%</div>
+                        {session.status === 'scheduled' && (
+                          <Button size="sm" variant="outline">
+                            <Play className="h-4 w-4" />
+                          </Button>
+                        )}
                       </div>
-                    )
-                  })}
-                </div>
-              </CardContent>
-            </Card>
-          </div>
-
-          {/* Right Column - Goals & Stats */}
-          <div className="space-y-6">
-            {/* Quick Stats */}
-            <Card className="bg-slate-800/50 backdrop-blur-sm border-slate-700/50">
-              <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
-                  <Zap className="w-5 h-5 text-cyan-400" />
-                  Today's Stats
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Sessions Completed</span>
-                  <span className="text-white font-medium">
-                    {completedToday}/{totalToday}
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Study Time</span>
-                  <span className="text-white font-medium">
-                    {todaysSessions.filter((s) => s.completed).reduce((acc, s) => acc + s.duration, 0)}m
-                  </span>
-                </div>
-                <div className="flex items-center justify-between">
-                  <span className="text-slate-400">Completion Rate</span>
-                  <span className="text-emerald-400 font-medium">
-                    {totalToday > 0 ? Math.round((completedToday / totalToday) * 100) : 0}%
-                  </span>
-                </div>
-              </CardContent>
-            </Card>
-
-            {/* Learning Goals */}
-            <Card className="bg-slate-800/50 backdrop-blur-sm border-slate-700/50">
-              <CardHeader>
-                <CardTitle className="text-white flex items-center gap-2">
-                  <Target className="w-5 h-5 text-cyan-400" />
-                  Learning Goals
-                </CardTitle>
-              </CardHeader>
-              <CardContent className="space-y-4">
-                {goals.map((goal) => (
-                  <div key={goal.id} className="space-y-2">
-                    <div className="flex items-start justify-between">
-                      <div className="flex-1">
-                        <h3 className="font-medium text-white text-sm">{goal.title}</h3>
-                        <p className="text-xs text-slate-400 mt-1">{goal.description}</p>
-                      </div>
-                      <Badge variant="secondary" className={`${getCategoryColor(goal.category)} text-xs`}>
-                        {goal.category}
-                      </Badge>
-                    </div>
-                    <div className="space-y-1">
-                      <div className="flex items-center justify-between text-xs">
-                        <span className="text-slate-400">Progress</span>
-                        <span className="text-white">{goal.progress}%</span>
-                      </div>
-                      <div className="h-2 bg-slate-700 rounded-full overflow-hidden">
-                        <div
-                          className="h-full bg-gradient-to-r from-cyan-500 to-cyan-400 transition-all duration-300"
-                          style={{ width: `${goal.progress}%` }}
-                        />
-                      </div>
-                      <div className="text-xs text-slate-400">Due: {goal.targetDate}</div>
-                    </div>
+                    ))}
                   </div>
-                ))}
+                )}
+              </CardContent>
+            </Card>
+
+            <Card>
+              <CardHeader>
+                <CardTitle className="flex items-center gap-2">
+                  <AlertCircle className="h-5 w-5" />
+                  Upcoming Sessions
+                </CardTitle>
+              </CardHeader>
+              <CardContent>
+                {upcomingSessions.length === 0 ? (
+                  <p className="text-muted-foreground text-center py-4">
+                    No upcoming sessions
+                  </p>
+                ) : (
+                  <div className="space-y-3">
+                    {upcomingSessions.map((session) => (
+                      <div key={session._id} className="flex items-center space-x-3 p-3 rounded-lg border">
+                        <div className={`w-3 h-3 rounded-full ${getStatusColor(session.status)}`}></div>
+                        <div className="flex-1">
+                          <p className="font-medium">{session.title}</p>
+                          <p className="text-sm text-muted-foreground">
+                            {session.subject} • {new Date(session.startTime).toLocaleDateString()} at {new Date(session.startTime).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })}
+                          </p>
+                        </div>
+                      </div>
+                    ))}
+                  </div>
+                )}
               </CardContent>
             </Card>
           </div>
-        </div>
-      </div>
+
+          {/* Subject Progress */}
+          <Card>
+            <CardHeader>
+              <CardTitle>Subject Progress</CardTitle>
+            </CardHeader>
+            <CardContent>
+              <div className="space-y-4">
+                {activeStudyPlan.subjects.map((subject, index) => {
+                  const progress = subject.allocatedHours > 0 
+                    ? Math.round((subject.completedHours / subject.allocatedHours) * 100)
+                    : 0
+                  
+                  return (
+                    <div key={index}>
+                      <div className="flex justify-between items-center mb-2">
+                        <div className="flex items-center gap-2">
+                          <div 
+                            className="w-3 h-3 rounded-full" 
+                            style={{ backgroundColor: subject.color }}
+                          ></div>
+                          <span className="font-medium">{subject.name}</span>
+                          <Badge variant="outline" className="text-xs">
+                            {subject.priority}
+                          </Badge>
+                        </div>
+                        <span className="text-sm text-muted-foreground">
+                          {subject.completedHours.toFixed(1)}h / {subject.allocatedHours.toFixed(1)}h
+                        </span>
+                      </div>
+                      <div className="w-full bg-gray-200 rounded-full h-2">
+                        <div 
+                          className="h-2 rounded-full transition-all duration-300" 
+                          style={{ 
+                            width: `${Math.min(progress, 100)}%`,
+                            backgroundColor: subject.color 
+                          }}
+                        ></div>
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            </CardContent>
+          </Card>
+          </TabsContent>
+
+          <TabsContent value="ai-tutor">
+            <ClientOnly>
+              <ChatInterface 
+                subject={activeStudyPlan?.subjects[0]?.name}
+                difficulty="intermediate"
+              />
+            </ClientOnly>
+          </TabsContent>
+
+          <TabsContent value="timer">
+            <div className="flex justify-center">
+              <ClientOnly>
+                <PomodoroTimer 
+                  subject={activeStudyPlan?.subjects[0]?.name}
+                  onSessionComplete={(sessionData) => {
+                    console.log('Session completed:', sessionData)
+                    // Add XP or update progress here
+                  }}
+                />
+              </ClientOnly>
+            </div>
+          </TabsContent>
+
+          <TabsContent value="progress">
+            <ClientOnly>
+              <ProgressTracker 
+                userId={session?.user?.email || undefined}
+                onLevelUp={(level) => console.log('Level up!', level)}
+                onBadgeUnlocked={(badge) => console.log('Badge unlocked!', badge)}
+              />
+            </ClientOnly>
+          </TabsContent>
+
+          <TabsContent value="recommendations">
+            <ClientOnly>
+              <SmartSuggestions 
+                userProgress={{
+                  weakSubjects: ['Mathematics', 'Chemistry'],
+                  strongSubjects: ['Physics', 'Biology'],
+                  studyPatterns: {},
+                  recentPerformance: {}
+                }}
+                onRecommendationAccept={(rec) => console.log('Applied recommendation:', rec)}
+              />
+            </ClientOnly>
+          </TabsContent>
+        </Tabs>
+      )}
+
+      {/* AI Tutor Dialog */}
+      <Dialog open={showAITutor} onOpenChange={setShowAITutor}>
+        <DialogContent className="max-w-4xl h-[80vh]">
+          <DialogHeader>
+            <DialogTitle>AI Personal Tutor</DialogTitle>
+          </DialogHeader>
+          <ClientOnly>
+            <ChatInterface 
+              subject={activeStudyPlan?.subjects[0]?.name}
+              difficulty="intermediate"
+            />
+          </ClientOnly>
+        </DialogContent>
+      </Dialog>
+
+      {/* Pomodoro Timer Dialog */}
+      <Dialog open={showPomodoroTimer} onOpenChange={setShowPomodoroTimer}>
+        <DialogContent className="max-w-md">
+          <DialogHeader>
+            <DialogTitle>Focus Timer</DialogTitle>
+          </DialogHeader>
+          <ClientOnly>
+            <PomodoroTimer 
+              subject={activeStudyPlan?.subjects[0]?.name}
+              onSessionComplete={(sessionData) => {
+                console.log('Session completed:', sessionData)
+                setShowPomodoroTimer(false)
+              }}
+            />
+          </ClientOnly>
+        </DialogContent>
+      </Dialog>
     </div>
   )
 }
